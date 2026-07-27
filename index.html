@@ -924,25 +924,48 @@ table.items.no-images{min-width:960px}
 
   // ---- quote details, commercial controls, and local autosave ----
   const DRAFT_KEY = 'rds-professional-quote-draft-v2';
+  const DRAFT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
   try{ localStorage.removeItem('rds-v5-recent-links'); }catch(ignore){}
   const formIds = ['f_company','f_date','f_expiry','f_customer','f_contact','f_email','f_phone','f_city','f_project','f_summary','f_additional_notes','f_discount','f_freight','f_tax','f_terms','f_signer','f_sign_date','f_initials','f_accept'];
   function saveDraft(){
-    const data = { fields:{}, qty:{...qty}, priceOverride:{...priceOverride}, descOverride:{...descOverride} };
+    const data = { savedAt:new Date().toISOString(), fields:{}, qty:{...qty}, priceOverride:{...priceOverride}, descOverride:{...descOverride} };
     formIds.forEach(id => { const el=document.getElementById(id); if(el) data.fields[id]=el.type==='checkbox' ? el.checked : el.value; });
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
-    const el=document.getElementById('saveIndicator');
-    if(el){ el.textContent='Draft saved locally • '+new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}); }
+    try{
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
+      const el=document.getElementById('saveIndicator');
+      if(el){ el.textContent='Draft saved locally • '+new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}); }
+    }catch(e){
+      const el=document.getElementById('saveIndicator');
+      if(el){ el.textContent='Draft could not be saved locally'; }
+    }
   }
   function loadDraft(){
     try{
-      const data=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null');
-      if(!data) return;
+      const raw=localStorage.getItem(DRAFT_KEY);
+      if(!raw) return;
+      const data=JSON.parse(raw);
+      if(!data || typeof data!=='object'){
+        localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      if(data.savedAt){
+        const savedTime=Date.parse(data.savedAt);
+        if(!Number.isFinite(savedTime) || Date.now()-savedTime>DRAFT_MAX_AGE_MS){
+          localStorage.removeItem(DRAFT_KEY);
+          const el=document.getElementById('saveIndicator');
+          if(el){ el.textContent='Expired local draft removed'; }
+          return;
+        }
+      }
       Object.entries(data.fields||{}).forEach(([id,val])=>{ const el=document.getElementById(id); if(el){ if(el.type==='checkbox') el.checked=Boolean(val); else el.value=val; } });
       Object.assign(qty,data.qty||{}); Object.assign(priceOverride,data.priceOverride||{}); Object.assign(descOverride,data.descOverride||{});
       document.querySelectorAll('.qty-input').forEach(el=>{ const k=el.dataset.si+'-'+el.dataset.ii; el.value=qty[k]||''; });
       document.querySelectorAll('.price-input').forEach(el=>{ const k=el.dataset.si+'-'+el.dataset.ii; if(priceOverride[k]!==undefined) el.value=priceOverride[k]; });
       document.querySelectorAll('.desc-input').forEach(el=>{ const k=el.dataset.si+'-'+el.dataset.ii; if(descOverride[k]!==undefined) el.value=descOverride[k]; });
-    }catch(e){}
+      if(!data.savedAt) saveDraft();
+    }catch(e){
+      try{ localStorage.removeItem(DRAFT_KEY); }catch(ignore){}
+    }
   }
   const today=new Date();
   const iso=d=>d.toISOString().slice(0,10);
