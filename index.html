@@ -1602,7 +1602,16 @@ async function emailSignedProposal(result,stamp){
     const input=document.createElement('input'); input.type='hidden'; input.name='payload'; input.value=JSON.stringify(payload); form.appendChild(input); document.body.appendChild(form);
     let done=false; const cleanup=()=>{window.removeEventListener('message',onMessage);form.remove();setTimeout(()=>iframe.remove(),500)};
     const timer=setTimeout(()=>{if(done)return;done=true;cleanup();reject(new Error('The email service did not confirm delivery. The PDF was still downloaded.'))},45000);
-    function onMessage(event){const msg=event.data||{};if(msg.source!=='rds-quote-mailer'||msg.requestId!==requestId)return;if(done)return;done=true;clearTimeout(timer);cleanup();if(msg.ok)resolve({sent:true,archived:!!msg.archived,archivePath:msg.archivePath||'',fileUrl:msg.fileUrl||''});else reject(new Error(msg.error||'Email service error'));}
+    function onMessage(event){
+      let endpointOrigin='';try{endpointOrigin=new URL(EMAIL_API_ENDPOINT).origin}catch(ignore){}
+      const trustedOrigin=event.origin===endpointOrigin||/^https:\/\/[a-z0-9.-]+\.googleusercontent\.com$/i.test(event.origin);
+      if(!trustedOrigin||event.source!==iframe.contentWindow)return;
+      const msg=event.data;
+      if(!msg||typeof msg!=='object'||Array.isArray(msg)||msg.source!=='rds-quote-mailer'||msg.requestId!==requestId)return;
+      if(done)return;done=true;clearTimeout(timer);cleanup();
+      if(msg.ok)resolve({sent:true,archived:!!msg.archived,archivePath:typeof msg.archivePath==='string'?msg.archivePath:'',fileUrl:typeof msg.fileUrl==='string'?msg.fileUrl:''});
+      else reject(new Error(typeof msg.error==='string'?msg.error:'Email service error'));
+    }
     window.addEventListener('message',onMessage); form.submit();
   });
 }
@@ -1617,6 +1626,20 @@ $('accept').addEventListener('click',async()=>{if(!signer.value.trim()){alert('E
     const q=(data.quote||'RDS-Proposal').replace(/[^a-z0-9_-]+/gi,'_');
     const c=(data.customer||'Customer').replace(/[^a-z0-9_-]+/gi,'_');
     return {data,html:buildCustomerApprovalHtml(data),filename:c+'_RDS_Customer_Approval.html'};
+  }
+  function isTrustedGoogleMessageOrigin(origin,endpoint){
+    let endpointOrigin='';try{endpointOrigin=new URL(endpoint).origin}catch(ignore){}
+    return origin===endpointOrigin||/^https:\/\/[a-z0-9.-]+\.googleusercontent\.com$/i.test(origin);
+  }
+  function validateApprovalUrl(value){
+    const raw=typeof value==='string'?value.trim():'';
+    if(!raw||raw.length>4096)throw new Error('The approval service returned an invalid link.');
+    let url;try{url=new URL(raw)}catch(ignore){throw new Error('The approval service returned a malformed link.');}
+    if(url.protocol!=='https:'||url.username||url.password)throw new Error('The approval service returned an insecure link.');
+    const host=url.hostname.toLowerCase();
+    const trustedHost=host==='script.google.com'||host.endsWith('.googleusercontent.com');
+    if(!trustedHost)throw new Error('The approval service returned a link from an unexpected website.');
+    return url.href;
   }
   async function createApprovalLink(pkg,emailCustomer){
     const endpoint=String(pkg.data.emailApiEndpoint||'').trim();
@@ -1646,10 +1669,19 @@ $('accept').addEventListener('click',async()=>{if(!signer.value.trim()){alert('E
         form.remove();setTimeout(()=>iframe.remove(),500);
       };
       const finish=msg=>{
-        if(done)return;done=true;cleanup();
-        if(msg&&msg.ok&&msg.approvalUrl)resolve(msg);else reject(new Error((msg&&msg.error)||'The approval link could not be created.'));
+        if(done)return;
+        if(!msg||typeof msg!=='object'||Array.isArray(msg))return;
+        done=true;cleanup();
+        if(msg.ok&&msg.approvalUrl){
+          try{resolve({...msg,approvalUrl:validateApprovalUrl(msg.approvalUrl)})}
+          catch(err){reject(err)}
+        }else reject(new Error(typeof msg.error==='string'?msg.error:'The approval link could not be created.'));
       };
-      function onMessage(event){const msg=event.data||{};if(msg.source==='rds-quote-linker'&&msg.requestId===requestId)finish(msg)}
+      function onMessage(event){
+        if(event.source!==iframe.contentWindow||!isTrustedGoogleMessageOrigin(event.origin,endpoint))return;
+        const msg=event.data;
+        if(msg&&typeof msg==='object'&&!Array.isArray(msg)&&msg.source==='rds-quote-linker'&&msg.requestId===requestId)finish(msg);
+      }
       function poll(){
         if(done)return;
         pollCount++;
@@ -1660,7 +1692,12 @@ $('accept').addEventListener('click',async()=>{if(!signer.value.trim()){alert('E
         script.onload=()=>script.remove();document.head.appendChild(script);
       }
       function schedulePoll(){if(!done)pollTimer=setTimeout(poll,Math.min(1500+pollCount*250,4000))}
-      window[callbackName]=msg=>{if(msg&&msg.pending){schedulePoll();return}finish(msg)};
+      window[callbackName]=msg=>{
+        if(!msg||typeof msg!=='object'||Array.isArray(msg))return;
+        if(msg.requestId&&msg.requestId!==requestId)return;
+        if(msg.pending){schedulePoll();return}
+        finish(msg);
+      };
       window.addEventListener('message',onMessage);
       timeoutTimer=setTimeout(()=>{if(done)return;done=true;cleanup();reject(new Error('The approval-link service did not confirm completion within 90 seconds. Check Apps Script Executions; the proposal may still have been created.'))},90000);
       form.submit();setTimeout(poll,1200);
