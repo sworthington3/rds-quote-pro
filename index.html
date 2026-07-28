@@ -1477,6 +1477,38 @@ table.items.no-images{min-width:960px}
   document.getElementById('acceptProposalBtn').addEventListener('click',()=>{document.getElementById('f_signer').click();document.getElementById('f_sign_date').click();initials.click();if(document.getElementById('adoptSignatureBtn').style.display!=='none')document.getElementById('adoptSignatureBtn').click();document.getElementById('f_accept').checked=true;const t='Accepted '+new Date().toLocaleString();setStatus('accepted',t);saveDraft();});
   document.getElementById('declineProposalBtn').addEventListener('click',()=>{document.getElementById('f_accept').checked=false;setStatus('declined','Declined '+new Date().toLocaleString());saveDraft();});
   function quotePayload(){const fields={};document.querySelectorAll('input[id^="f_"],textarea[id^="f_"],select[id^="f_"]').forEach(el=>fields[el.id]=el.type==='checkbox'?el.checked:el.value);return{app:'RDS Quote Pro',version:2,savedAt:new Date().toISOString(),fields,qty:{...qty},priceOverride:{...priceOverride},descOverride:{...descOverride},acceptanceState,acceptanceTime,signature:signaturePresent?signaturePad.toDataURL('image/png'):null,adoptedSignature};}
+  function downloadQuoteFile(){
+    const data=quotePayload();
+    const customer=(document.getElementById('f_customer')?.value||'Customer').trim().replace(/[^a-z0-9_-]+/gi,'_').replace(/^_+|_+$/g,'')||'Customer';
+    const quote=(document.getElementById('f_quote')?.value||'').trim().replace(/[^a-z0-9_-]+/gi,'_').replace(/^_+|_+$/g,'');
+    const date=new Date().toISOString().slice(0,10);
+    const filename='RDS_Quote_'+customer+(quote?'_'+quote:'')+'_'+date+'.json';
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=filename;
+    link.rel='noopener';
+    link.style.display='none';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(()=>{link.remove();URL.revokeObjectURL(url)},2000);
+    const indicator=document.getElementById('saveIndicator');
+    if(indicator){
+      indicator.textContent='Quote file downloaded';
+      setTimeout(()=>{indicator.textContent='Draft saved locally'},2500);
+    }
+  }
+  document.getElementById('saveQuoteBtn').addEventListener('click',event=>{
+    event.preventDefault();
+    try{
+      saveDraft();
+      downloadQuoteFile();
+    }catch(err){
+      console.error('Save Quote failed:',err);
+      alert('The quote file could not be saved: '+(err&&err.message?err.message:'Unknown browser error'));
+    }
+  });
   const file=document.getElementById('openQuoteFile');document.getElementById('openQuoteBtn').addEventListener('click',()=>file.click());file.addEventListener('change',async()=>{const f=file.files[0];if(!f)return;try{const data=JSON.parse(await f.text());Object.entries(data.fields||{}).forEach(([id,v])=>{const el=document.getElementById(id);if(el){if(el.type==='checkbox')el.checked=!!v;else el.value=v}});Object.keys(qty).forEach(k=>delete qty[k]);Object.assign(qty,data.qty||{});Object.keys(priceOverride).forEach(k=>delete priceOverride[k]);Object.assign(priceOverride,data.priceOverride||{});Object.keys(descOverride).forEach(k=>delete descOverride[k]);Object.assign(descOverride,data.descOverride||{});document.querySelectorAll('.qty-input').forEach(el=>{const k=el.dataset.si+'-'+el.dataset.ii;el.value=qty[k]||''});document.querySelectorAll('.price-input').forEach(el=>{const k=el.dataset.si+'-'+el.dataset.ii;if(priceOverride[k]!==undefined)el.value=priceOverride[k]});document.querySelectorAll('.desc-input').forEach(el=>{const k=el.dataset.si+'-'+el.dataset.ii;if(descOverride[k]!==undefined)el.value=descOverride[k]});if(data.signature){const img=new Image();img.onload=()=>{const r=signaturePad.getBoundingClientRect();sigCtx.clearRect(0,0,r.width,r.height);sigCtx.drawImage(img,0,0,r.width,r.height);signaturePresent=true;adoptedSignature=!!data.adoptedSignature;adoptSignatureBtn.style.display='none'};img.src=data.signature}setStatus(data.acceptanceState||'pending',data.acceptanceTime||'');render();saveDraft();showPanel('customer');alert('Quote opened successfully.')}catch(err){alert('This quote file could not be opened.')}});
 
   function customerPackageData(){
@@ -1616,106 +1648,6 @@ async function emailSignedProposal(result,stamp){
 }
 $('accept').addEventListener('click',async()=>{if(!signer.value.trim()){alert('Enter the authorized representative name.');return}if(!date.value)date.value=new Date().toISOString().slice(0,10);if(!initials.value)initials.value=signer.value.split(/\s+/).filter(Boolean).slice(0,3).map(x=>x[0].toUpperCase()).join('');if(!signed){alert('Click the signature box to adopt a signature, or draw one.');return}if(!$('agree').checked){alert('Please check the authorization and acceptance box.');return}const stamp=new Date().toLocaleString();$('accept').disabled=true;$('accept').textContent='Finalizing Proposal…';const result=await downloadSignedPdf(stamp);if(result&&result.ok){let emailStatus=result.localAction==='available-in-email'?'Signed PDF created.':'Signed PDF downloaded.';try{const mailed=await emailSignedProposal(result,stamp);if(mailed.sent){emailStatus='Signed PDF emailed to '+DATA.email+' and '+SELLER_EMAIL+'.';if(mailed.archived)emailStatus+=' An archive copy was saved to Google Drive.';}else if(mailed.reason==='not-configured')emailStatus='Signed PDF created, but the Google Apps Script web-app URL has not been configured.';else if(mailed.reason==='no-customer-email')emailStatus='Signed PDF created. No customer email was included, so no email was sent.'}catch(err){console.error(err);emailStatus='Signed PDF created, but automatic email/archive failed: '+err.message}$('status').textContent='Electronically Accepted';$('status').classList.add('accepted');$('certificate').classList.add('show');$('certificateText').textContent=signer.value+' accepted proposal '+(DATA.quote||'')+' on '+stamp+'. Initials: '+initials.value+'. '+emailStatus;[signer,date,initials,$('agree')].forEach(el=>el.disabled=true);$('accept').textContent='Proposal Finalized'}else{$('accept').disabled=false;$('accept').textContent='Finalize Signed Proposal'}}); $('print').addEventListener('click',()=>window.print());
 </scr${''}ipt>
-<script>
-/* Isolated Save Quote handler: intentionally independent from the main app scripts. */
-(function(){
-  function safeObjectCopy(value){
-    try{
-      return value && typeof value === 'object'
-        ? JSON.parse(JSON.stringify(value))
-        : {};
-    }catch(ignore){
-      return {};
-    }
-  }
-
-  function createQuoteDownload(){
-    const fields = {};
-    document.querySelectorAll('input[id^="f_"], textarea[id^="f_"], select[id^="f_"]').forEach(function(el){
-      fields[el.id] = el.type === 'checkbox' ? el.checked : el.value;
-    });
-
-    const data = {
-      app: 'RDS Quote Pro',
-      version: 2,
-      savedAt: new Date().toISOString(),
-      fields: fields,
-      qty: typeof qty !== 'undefined' ? safeObjectCopy(qty) : {},
-      priceOverride: typeof priceOverride !== 'undefined' ? safeObjectCopy(priceOverride) : {},
-      descOverride: typeof descOverride !== 'undefined' ? safeObjectCopy(descOverride) : {},
-      acceptanceState: typeof acceptanceState !== 'undefined' ? acceptanceState : 'pending',
-      acceptanceTime: typeof acceptanceTime !== 'undefined' ? acceptanceTime : '',
-      signature: null,
-      adoptedSignature: typeof adoptedSignature !== 'undefined' ? Boolean(adoptedSignature) : false
-    };
-
-    try{
-      if(typeof signaturePresent !== 'undefined' && signaturePresent &&
-         typeof signaturePad !== 'undefined' && signaturePad &&
-         typeof signaturePad.toDataURL === 'function'){
-        data.signature = signaturePad.toDataURL('image/png');
-      }
-    }catch(ignore){}
-
-    const customerEl = document.getElementById('f_customer');
-    const customer = ((customerEl && customerEl.value) || 'Customer')
-      .trim()
-      .replace(/[^a-z0-9_-]+/gi, '_')
-      .replace(/^_+|_+$/g, '') || 'Customer';
-
-    const quoteEl = document.getElementById('f_quote');
-    const quote = ((quoteEl && quoteEl.value) || '')
-      .trim()
-      .replace(/[^a-z0-9_-]+/gi, '_')
-      .replace(/^_+|_+$/g, '');
-
-    const date = new Date().toISOString().slice(0,10);
-    const filename = 'RDS_Quote_' + customer + (quote ? '_' + quote : '') + '_' + date + '.json';
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json;charset=utf-8'});
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-
-    link.href = url;
-    link.download = filename;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
-
-    const indicator = document.getElementById('saveIndicator');
-    if(indicator){
-      indicator.textContent = 'Quote file downloaded';
-      setTimeout(function(){
-        indicator.textContent = 'Draft saved locally';
-      }, 2500);
-    }
-  }
-
-  function attachSaveHandler(){
-    const button = document.getElementById('saveQuoteBtn');
-    if(!button) return;
-    button.type = 'button';
-    button.onclick = function(event){
-      event.preventDefault();
-      event.stopPropagation();
-      try{
-        createQuoteDownload();
-      }catch(error){
-        console.error('Save Quote failed:', error);
-        alert('The quote file could not be downloaded. Please allow downloads for this site and try again.');
-      }
-      return false;
-    };
-  }
-
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', attachSaveHandler, {once:true});
-  }else{
-    attachSaveHandler();
-  }
-})();
-</script>
 
 </body></html>`;
   }
